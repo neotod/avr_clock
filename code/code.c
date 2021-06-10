@@ -1,3 +1,5 @@
+// when you press interrupt keys for a setting, you must enter the 4 digit pin correctly (you can change the global variable "pin")
+
 #include <mega32.h>
 #include <alcd.h>
 #include <stdbool.h>
@@ -10,8 +12,7 @@
 // Voltage Reference: AREF pin
 #define ADC_VREF_TYPE ((0<<REFS1) | (0<<REFS0) | (0<<ADLAR))
 
-#define LED_DECODER 6
-#define NAND_DECODER 7
+#define USER_BLOCK_MAX_TIME 15
 
 #define KEYPAD_SQUARE 11
 #define KEYPAD_STAR 10
@@ -35,6 +36,7 @@ void update_time_date();
 
 void check_alarm();
 void time_alarm_get_input(bool);
+int login();
 int keypad();
 
 struct Time {
@@ -62,15 +64,21 @@ struct Alarm {
 } alarm;
 
 
-char seg_numbers[] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F}; // 7 segments are common cathode
+char seg_numbers[] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F}; // 7 segments are common cathod
 
 bool temper_int = false;
-bool temper_buzz_alowed = false;
 bool time_int = false;
-bool alarm_buzz = false;
 bool date_int = false;
 
+bool temper_buzz_alowed = false;
+bool alarm_buzz = false;
+
+bool user_blocked = false;
+bool enable_login = true;
+
 int buzz_numbers = 0;
+int user_block_time = 0;
+int pin = 1234;
 
 
 // External Interrupt 0 handler: set temperature
@@ -120,6 +128,13 @@ interrupt [TIM1_OVF] void timer1_isr(void) { // this will be called after 1 sec 
             PORTD.6 = 1;
             delay_ms(20);
             PORTD.6 = 0;
+        }
+    }
+
+    if (user_blocked) {
+        user_block_time--;
+        if (user_block_time == 0) {
+            user_blocked = false;
         }
     }
     
@@ -366,6 +381,213 @@ void update_time_date() {
     }
 }
 
+int login() {
+    // returns: 
+    // 0 => login failed
+    // 1 => logged in successfuly
+    // 2 => success, but user will be going to main page
+    // -1 => discard the whole thing
+
+    bool change_pin    = false;
+    bool take_new_pin  = false;
+    int entered_inputs = 0;
+    int pin_number     = 0;
+    int kp_input       = -1;
+    int attempts       = 3; // after 3 attempts of an invalid pin, you will be throwed out to the main page
+    int lcd_x;
+    char temp_number[5];
+    char temp_output[17] = "";
+    char temp[2];
+
+    delay_ms(30);
+    lcd_clear();
+    delay_ms(10);
+        
+    lcd_gotoxy(0, 0);
+    strcat(temp_output, "Pin: ----");
+
+    lcd_puts(temp_output);
+    delay_ms(20);
+    
+    lcd_gotoxy(0, 1);
+    strcpy(temp_output, "*:Exit#:ChangPin");
+    lcd_puts(temp_output);
+    delay_ms(30);
+
+    kp_input = -1;
+    lcd_x = 5;
+    while(1) {
+        lcd_gotoxy(lcd_x, 0);
+        lcd_puts("_");
+
+        if (!take_new_pin) {
+            strcpy(temp, "");
+            sprintf(temp, "%d", attempts);
+
+            lcd_gotoxy(15, 0);
+            lcd_puts(temp);
+            delay_ms(30);
+        }
+        
+        delay_ms(30);
+        kp_input = keypad();
+        if (kp_input != -1) {
+            if (0 <= kp_input && kp_input <= 9) {
+                strcpy(temp, "");
+                sprintf(temp, "%d", kp_input);
+
+                delay_ms(10);
+                
+                lcd_gotoxy(lcd_x, 0);
+                if (change_pin && take_new_pin) {
+                    lcd_puts(temp);
+                    delay_ms(30);
+                }
+                else {
+                    lcd_puts("*");
+                    delay_ms(30);
+                }
+
+                strcat(temp_number, temp);
+
+                if (entered_inputs == 3) { // user entered 4 inputs (pin), so lets check it
+                    pin_number = atoi(temp_number);
+                    strcpy(temp_number, "");
+
+                    if (change_pin && take_new_pin) { // taking new pin
+                        pin = pin_number;
+
+                        lcd_clear();
+                        delay_ms(20);
+                        lcd_gotoxy(0, 0);
+                        lcd_puts("  Pin changed  ");
+                        delay_ms(20);
+                        lcd_gotoxy(0, 1);
+                        lcd_puts("  Successfuly!  ");
+                        delay_ms(300);
+
+                        return 2; // success but user will be going to main page
+                    }
+                    
+                    if (pin_number == pin) {
+                        if (change_pin) { // go to next step => taking new pin
+                            take_new_pin = true;
+                            entered_inputs = 0;
+
+                            lcd_clear();
+                            delay_ms(10);
+
+                            strcpy(temp_output, "NewPin: ----");
+                            lcd_gotoxy(0, 0);
+                            lcd_puts(temp_output);
+                            delay_ms(10);
+
+                            strcpy(temp_output, "*:Exit #:Reset");
+                            lcd_gotoxy(0, 1);
+                            lcd_puts(temp_output);
+                            delay_ms(10);
+
+                            lcd_x = 8;
+                            continue;
+                        }
+                        else
+                            return 1; // success in login
+                    }
+                    else { // wrong pin
+                        attempts--;
+
+                        lcd_gotoxy(0, 0);
+                        strcpy(temp_output, "   Wrong Pin!   ");
+                        lcd_puts(temp_output);
+                        delay_ms(200);
+
+                        if (attempts == 0) {
+                            user_blocked = true;
+                            user_block_time = USER_BLOCK_MAX_TIME;
+                            return 0; // login failed and user will be blocked to enter settings for a while
+                        }
+                        
+                        lcd_clear();
+                        delay_ms(15);
+
+                        lcd_gotoxy(0, 0);
+                        if (change_pin) {
+                            strcpy(temp_output, "CurntPin: ----");
+                            lcd_puts(temp_output);
+                            delay_ms(15);
+
+                            lcd_gotoxy(0, 1);
+                            strcpy(temp_output, "*:Exit #:Reset");
+                            lcd_puts(temp_output);
+                            delay_ms(15);
+
+                            lcd_x = 10;
+                        }
+                        else {
+                            strcpy(temp_output, "Pin: ----");
+                            lcd_puts(temp_output);
+                            delay_ms(15);
+
+                            lcd_gotoxy(0, 1);
+                            strcpy(temp_output, "*:Exit#:ChangPin");
+                            lcd_puts(temp_output);
+                            delay_ms(15);
+
+                            lcd_x = 5;
+                        }
+
+                        entered_inputs = 0;
+                        continue;
+                    }
+                }
+                entered_inputs++;
+                lcd_x++;
+            }
+            else if (kp_input == KEYPAD_STAR) {
+                return -1; // discarding the whole thing
+            }
+            else if (kp_input == KEYPAD_SQUARE) {
+                strcpy(temp_number, "");
+                strcpy(temp, "");
+
+                if (!change_pin) {
+                    change_pin = true;
+
+                    lcd_clear();
+                    delay_ms(10);
+
+                    lcd_gotoxy(0, 0);
+                    strcpy(temp_output, "CurntPin: ----");
+                    lcd_puts(temp_output);
+                    delay_ms(15);
+
+                    lcd_gotoxy(0, 1);
+                    strcpy(temp_output, "*:Exit #:Reset");
+                    lcd_puts(temp_output);
+                    delay_ms(15);
+
+                    lcd_x = 10;
+                    attempts = 3;
+                }
+                else {
+                    if (!take_new_pin) // user want to rewrite the pin
+                        lcd_x = 10;
+                    else
+                        lcd_x = 8;
+
+                    strcpy(temp_output, "----");
+                        
+                    lcd_gotoxy(lcd_x, 0);
+                    lcd_puts(temp_output);
+                    delay_ms(15);
+                }
+
+                entered_inputs = 0;
+            }
+        }         
+    }    
+}
+
 void check_alarm() {
     bool on_time = true;
 
@@ -422,7 +644,7 @@ void time_alarm_get_input(bool alarm_input) {
         lcd_gotoxy(lcd_x, 0);
         lcd_puts("_");
 
-        delay_ms(30);            
+        delay_ms(50);
         kp_input = keypad();
         if (kp_input != -1) {
             if (0 <= kp_input && kp_input <= 9) {
@@ -513,21 +735,46 @@ void time_alarm_get_input(bool alarm_input) {
 void set_time_alarm_int() {
     bool clock_set = true;
     int kp_input = -1;
+
+    if (user_blocked) {
+        char temp[7];
+        delay_ms(10);
+        lcd_clear();
+        delay_ms(10);
+        lcd_puts("Wait ");
+        delay_ms(10);
+
+        sprintf(temp, "%dsecs and", user_block_time);
+        lcd_puts(temp);
+        delay_ms(10);
+
+        lcd_gotoxy(0, 1);
+        lcd_puts("then try again");
+        delay_ms(200);
+
+        return;   
+    }
+    if (enable_login) {
+        int result = login();
+        
+        if (result == 0 || result == -1 || result == 2)
+            return;
+    }
     
     delay_ms(20);
     lcd_clear();
     delay_ms(10);
     
     lcd_gotoxy(0, 0);
-    lcd_puts("1:clock 3:alarm");
+    lcd_puts("1:Clock 3:Alarm");
     delay_ms(10);
     
     lcd_gotoxy(0, 1);
-    lcd_puts("*:discard");
+    lcd_puts("*:Discard");
     delay_ms(10);
     
     while(1) {
-        delay_ms(30);
+        delay_ms(40);
         kp_input = keypad();
         if (kp_input != -1) {
             if (kp_input == 1) {
@@ -552,22 +799,22 @@ void set_time_alarm_int() {
         show_alarm(0, 0);
         
         if (alarm.on) {
-            lcd_puts(" 1:off");
+            lcd_puts(" 1:OFF");
             delay_ms(10);
         }
         else {
-            lcd_puts(" 1:on");
+            lcd_puts(" 1:ON");
             delay_ms(10);
         }
     
         lcd_gotoxy(0, 1);
-        lcd_puts("*:discard #:set");
+        lcd_puts("*:Discard #:Set");
         delay_ms(10);
 
         
         kp_input = -1;        
         while(1) {
-            delay_ms(30);
+            delay_ms(50);
             kp_input = keypad();
             if (kp_input != -1) {
                 if (kp_input == 1) {
@@ -579,11 +826,11 @@ void set_time_alarm_int() {
                     show_alarm(0, 0);
                     
                     if (alarm.on) {
-                        lcd_puts(" 1:off");
+                        lcd_puts(" 1:OFF");
                         delay_ms(10);
                     }
                     else {
-                        lcd_puts(" 1:on");
+                        lcd_puts(" 1:ON");
                         delay_ms(10);
                     }
                 }
@@ -616,6 +863,31 @@ void set_temper_int() {
     int number;
     int input_len = 0;
     char new_temper[4];
+
+    if (user_blocked) {
+        char temp[7];
+        delay_ms(10);
+        lcd_clear();
+        delay_ms(10);
+        lcd_puts("Wait ");
+        delay_ms(10);
+
+        sprintf(temp, "%dsecs and", user_block_time);
+        lcd_puts(temp);
+        delay_ms(10);
+
+        lcd_gotoxy(0, 1);
+        lcd_puts("then try again");
+        delay_ms(200);
+
+        return;   
+    }
+    if (enable_login) {
+        int result = login();
+        
+        if (result == 0 || result == -1 || result == 2)
+            return;
+    }
     
     delay_ms(30);
     lcd_clear();
@@ -638,11 +910,11 @@ void set_temper_int() {
     delay_ms(10);
     
     lcd_gotoxy(0, 1);
-    lcd_puts("*:discard #:edit");
+    lcd_puts("*:Discard #:Edit");
     delay_ms(10);
     
     while(1) {
-        delay_ms(30);
+        delay_ms(50);
         kp_input = keypad();
         if (kp_input != -1) {
             delay_ms(10);
@@ -660,12 +932,12 @@ void set_temper_int() {
     delay_ms(10);
         
     lcd_gotoxy(0, 0);
-    lcd_puts("0:min, 1:max");
+    lcd_puts("0:Min, 1:Max");
     lcd_gotoxy(0, 1);
-    lcd_puts("*:discard");
+    lcd_puts("*:Discard");
     
     while(1) {
-        delay_ms(30);
+        delay_ms(50);
         kp_input = keypad();
         if (kp_input != -1) {
             if (kp_input == 0) {
@@ -688,23 +960,23 @@ void set_temper_int() {
         
     lcd_gotoxy(0, 0);
     if (temper_min) {
-        lcd_puts("min: ");
+        lcd_puts("Min: ");
         delay_ms(10);
     }
     else {
-        lcd_puts("max: ");
+        lcd_puts("Max: ");
         delay_ms(10);
     }
         
     lcd_gotoxy(0, 1);
     delay_ms(10);
-    lcd_puts("*:discard #:save");
+    lcd_puts("*:Discard #:Save");
     
     delay_ms(10);
     
     kp_input = -1;                
     while(1) {
-        delay_ms(30);
+        delay_ms(50);
         kp_input = keypad();
         if (kp_input != -1) {
             if (0 <= kp_input && kp_input <= 9) {
@@ -807,6 +1079,31 @@ void set_date_int() {
     char temp_number[5];
     char temp[2];
 
+    if (user_blocked) {
+        char temp[7];
+        delay_ms(10);
+        lcd_clear();
+        delay_ms(10);
+        lcd_puts("Wait ");
+        delay_ms(10);
+
+        sprintf(temp, "%dsecs and", user_block_time);
+        lcd_puts(temp);
+        delay_ms(10);
+
+        lcd_gotoxy(0, 1);
+        lcd_puts("then try again");
+        delay_ms(200);
+
+        return;   
+    }
+    if (enable_login) {
+        int result = login();
+        
+        if (result == 0 || result == -1 || result == 2)
+            return;
+    }
+
     delay_ms(30);
     lcd_clear();
     delay_ms(10);
@@ -819,7 +1116,7 @@ void set_date_int() {
     delay_ms(10);
     
     lcd_gotoxy(0, 1);
-    lcd_puts("*:discard #:rese");
+    lcd_puts("*:Discard#:Reset");
     delay_ms(10);
 
     kp_input = -1;
@@ -828,7 +1125,7 @@ void set_date_int() {
         lcd_gotoxy(lcd_x, 0);
         lcd_puts("_");
         
-        delay_ms(30);
+        delay_ms(50);
         kp_input = keypad();
         if (kp_input != -1) {
             if (0 <= kp_input && kp_input <= 9) {
