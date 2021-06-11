@@ -66,9 +66,9 @@ struct Alarm {
 
 char seg_numbers[] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F}; // 7 segments are common cathod
 
-bool temper_int = false;
-bool time_int = false;
-bool date_int = false;
+volatile bool temper_int = false;
+volatile bool time_int = false;
+volatile bool date_int = false;
 
 bool temper_buzz_alowed = false;
 bool alarm_buzz = false;
